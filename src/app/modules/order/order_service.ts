@@ -1,5 +1,5 @@
 import { JwtPayload } from "jsonwebtoken";
-import { TOrder } from "./order_interface";
+import { TDeliveryStatus, TOrder } from "./order_interface";
 import { Client } from "../client/client_model";
 import AppError from "../../errors/AppError";
 import mongoose, { Types } from "mongoose";
@@ -196,4 +196,114 @@ const createOrderIntoDB = async (user: JwtPayload, payload: TOrder) => {
   }
 };
 
-export const OrderServices = { createOrderIntoDB };
+// update deleivery status.
+
+const updateOrderStatus = async (orderId: string, payload: TOrder) => {
+  const existingOrder = await Order.findById(orderId);
+  if (!existingOrder || existingOrder.isDeleted) {
+    throw new AppError(404, "This Order not found!");
+  }
+
+  if (existingOrder.deliveryStatus === "delivered") {
+    throw new AppError(
+      400,
+      "This order already delivered! You can't update it.",
+    );
+  }
+
+  const existingTransaction = await Transaction.findById(
+    existingOrder.transaction,
+  );
+
+  const next = payload.deliveryStatus as TDeliveryStatus;
+  const current = existingOrder.deliveryStatus as TDeliveryStatus;
+
+  // "pending" -> "confrim" or "cancel"
+  // "cancel" -> "confirm"
+  // "confirm" -> "on-curiar"
+  // "on-curiar" -> "return" or "delivered";
+
+  if (current === "pending") {
+    if (next !== "confirm" && next !== "cancel") {
+      throw new AppError(400, "Pending orders can only be confirm or cancel");
+    }
+  } else if (current === "cancel") {
+    if (next !== "confirm") {
+      throw new AppError(400, "Canceled orders can only be re-confirm");
+    }
+  } else if (current === "confirm") {
+    if (next !== "on-curiar") {
+      throw new AppError(400, "Confirmed orders can only move to on-curiar");
+    }
+  } else if (current === "on-curiar") {
+    if (next !== "return" && next !== "delivered") {
+      throw new AppError(
+        400,
+        "On-curiar orders can only be marked as return or deliver",
+      );
+    }
+  } else {
+    // should never happen if you have only the listed states
+    throw new AppError(400, `Illegal current state '${current}'`);
+  }
+
+  if (
+    (current === "pending" && next === "confirm") ||
+    (current === "confirm" && next === "on-curiar") ||
+    (current === "on-curiar" && next === "delivered")
+  ) {
+    existingOrder.deliveryStatus = next;
+  }
+
+  if (current === "pending" && next === "cancel") {
+    const ops = existingOrder.products.map((p) => ({
+      updateOne: {
+        filter: { _id: p.productId },
+        update: { $inc: { stock: p.quantity } },
+      },
+    }));
+    await Product.bulkWrite(ops);
+    existingOrder.deliveryStatus = next;
+  }
+
+  if (current === "cancel" && next === "confirm") {
+    const ops = existingOrder.products.map((p) => ({
+      updateOne: {
+        filter: { _id: p.productId },
+        update: { $inc: { stock: -p.quantity } },
+      },
+    }));
+    await Product.bulkWrite(ops);
+    existingOrder.deliveryStatus = next;
+  }
+
+  if (current === "on-curiar" && next === "return") {
+    const ops = existingOrder.products.map((p) => ({
+      updateOne: {
+        filter: { _id: p.productId },
+        update: { $inc: { stock: p.quantity } },
+      },
+    }));
+    await Product.bulkWrite(ops);
+    existingOrder.deliveryStatus = next;
+  }
+
+  if (payload.isDeleted) {
+    existingOrder.isDeleted = payload.isDeleted;
+    if (existingTransaction) {
+      existingTransaction.isDeleted = payload.isDeleted;
+      await existingTransaction.save();
+    }
+  }
+
+  if (existingTransaction) {
+    existingTransaction.deliveryStatus = next;
+    await existingTransaction.save();
+  }
+  if (payload.adminNote) {
+    existingOrder.adminNote = payload.adminNote;
+  }
+
+  await existingOrder.save();
+};
+export const OrderServices = { createOrderIntoDB, updateOrderStatus };

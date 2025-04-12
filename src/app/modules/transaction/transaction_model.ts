@@ -61,7 +61,7 @@ const TransactionSchema = new mongoose.Schema<TTransaction>(
       type: String,
       enum: [
         "pending",
-        "confrim",
+        "confirm",
         "cancel",
         "on-curiar",
         "return",

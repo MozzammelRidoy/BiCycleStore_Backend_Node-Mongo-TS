@@ -45,6 +45,10 @@ const OrderSchema = new mongoose.Schema<TOrder>(
       type: String,
       trim: true,
     },
+    adminNote: {
+      type: String,
+      trim: true,
+    },
     phone: {
       type: String,
       required: [true, "Phone is required!"],
